@@ -11,7 +11,7 @@ import {AggregatorV3Interface} from
  * @title DSCEngine
  * @author Jamiu Garba
  *
- * This system is designed to be as minimal as possible, and have tokens maintain a 1 token == $1 peg.
+ * This system is designed to be as minimal as possible, and have tokens maintain a 1 token == $1 pegged.
  * This stablecoin has the  properties:
  * - Exogenous collateral
  * - Dollar pegged
@@ -33,13 +33,17 @@ contract DSCEngine is ReentrancyGuard {
     error DSCEngine__NeedsMoreThanZero();
     error DSCEngine__TokenAddressesAndPriceFeedAddressesMustBeTheSameLength();
     error DSCEngine__NotAllowedToken();
-    error DSCEngine_TransferFailed();
+    error DSCEngine__TransferFailed();
+    error DSCEngine__BreaksHealthFactor(uint256 userHealthFactor);
 
     /////////////////////////
     // STATE VARIABLES     //
     ////////////////////////
     uint256 private constant ADDITIONAL_FEED_PRECISION = 1e10;
     uint256 private constant PRECISION = 1e18;
+    uint256 private constant LIQUIDATION_THRESHOLD = 50; // 200% overcollateralized
+    uint256 private constant LIQUIDATION_PRECISION = 100;
+    uint256 private constant MIN_HEALTH_FACTOR = 1;
 
     mapping(address token => address priceFeed) private s_priceFeeds; //tokenToPriceFeed
     mapping(address user => mapping(address token => uint256 amount)) private s_collateralDeposited;
@@ -113,7 +117,7 @@ contract DSCEngine is ReentrancyGuard {
         s_collateralDeposited[msg.sender][tokenCollateralAddress] += amountCollateral;
         emit CollateralDeposited(msg.sender, tokenCollateralAddress, amountCollateral);
         (bool success) = IERC20(tokenCollateralAddress).transferFrom(msg.sender, address(this), amountCollateral);
-        if (!success) revert DSCEngine_TransferFailed();
+        if (!success) revert DSCEngine__TransferFailed();
     }
 
     function redeemCollateralForDsc() external {}
@@ -159,11 +163,17 @@ contract DSCEngine is ReentrancyGuard {
         // 2. Total collateral value
 
         (uint256 totalDscMinted, uint256 collateralValueInUsd) = _getAccountInformation(user);
+        uint256 collateralAdjustedForThreshold = (collateralValueInUsd * LIQUIDATION_THRESHOLD) / LIQUIDATION_PRECISION;
+
+        return (collateralAdjustedForThreshold * PRECISION / totalDscMinted);
     }
 
     function _revertIfHealthFactorIsBroken(address user) internal view {
         // 1. Check health factor (Do they have enough collateral ?)
         // 2. revert if they don't have a good health factor
+
+        uint256 userHealthFactor = _healthFactor(user);
+        if (userHealthFactor < MIN_HEALTH_FACTOR) revert DSCEngine__BreaksHealthFactor(userHealthFactor);
     }
 
     ////////////////////////////////////////
@@ -189,6 +199,6 @@ contract DSCEngine is ReentrancyGuard {
         // If 1 ETH = $1000
         // The returned value(price) from chainlink will be 1000 * 1e8 because it has 8 decimals
         // But the amount will be in wei which is 18 decimals 1e18 , so we have to make the 2 have the same decimals
-        return (uint256((price * ADDITIONAL_FEED_PRECISION) * amount)) / PRECISION; // -> (1000 * 1e8 * 1e10) * 1 * 1e18
+        return ((uint256(price) * ADDITIONAL_FEED_PRECISION) * amount) / PRECISION; // -> (1000 * 1e8 * 1e10) * 1 * 1e18
     }
 }
